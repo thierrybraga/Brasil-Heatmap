@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mapa de Calor - Brasil (Google Trends)</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Leaflet CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+    <!-- PapaParse for CSV parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    
+    <!-- D3 for color scales -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+
+    <style>
+        #map { height: 600px; width: 100%; border-radius: 0.5rem; z-index: 10; }
+        .info { padding: 6px 8px; font: 14px/16px Arial, Helvetica, sans-serif; background: white; background: rgba(255,255,255,0.9); box-shadow: 0 0 15px rgba(0,0,0,0.2); border-radius: 5px; }
+        .info h4 { margin: 0 0 5px; color: #777; }
+        .legend { line-height: 18px; color: #555; }
+        .legend i { width: 18px; height: 18px; float: left; margin-right: 8px; opacity: 0.8; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans p-6 min-h-screen">
+
+    <div class="max-w-6xl mx-auto flex flex-col gap-6">
+        
+        <!-- Header -->
+        <header class="text-center">
+            <h1 class="text-4xl font-bold text-blue-700 mb-2">Gerador de Mapa de Calor - Brasil</h1>
+            <p class="text-gray-600">Cole os dados do Google Trends (Estado / Índice) para visualizar onde as buscas são maiores.</p>
+        </header>
+
+        <!-- Main Content Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- Sidebar / Input -->
+            <div class="bg-white p-6 rounded-lg shadow-md lg:col-span-1 flex flex-col gap-4">
+                
+                <h2 class="text-xl font-semibold mb-2">1. Insira os Dados</h2>
+                <p class="text-sm text-gray-500 mb-2">Cole o CSV ou a tabela copiada diretamente do Google Trends ("Interesse por sub-região").</p>
+                
+                <textarea id="dataInput" class="w-full h-48 p-3 border border-gray-300 rounded font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="Exemplo:
+Estado,Índice
+Acre,100
+Roraima,85
+Amazonas,60
+..."></textarea>
+                
+                <div class="flex flex-col gap-2 mt-2">
+                    <label class="text-sm font-medium">Esquema de Cores:</label>
+                    <select id="colorScheme" class="p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
+                        <option value="Reds">Vermelhos (Padrão)</option>
+                        <option value="Blues">Azuis</option>
+                        <option value="Greens">Verdes</option>
+                        <option value="Purples">Roxos</option>
+                        <option value="Oranges">Laranjas</option>
+                        <option value="YlOrRd">Amarelo-Laranja-Vermelho</option>
+                    </select>
+                </div>
+
+                <div class="flex flex-col gap-2 mt-2">
+                    <label class="text-sm font-medium">Nível Geográfico (IBGE):</label>
+                    <p class="text-xs text-red-600 bg-red-50 p-2 rounded border border-red-200">Nota: O Google Trends geralmente só fornece dados por Estado (UF) para o Brasil. Se tiver dados de cidade, eles devem combinar com os nomes oficiais.</p>
+                    <select id="geoLevel" class="p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
+                        <option value="estados">Estados (UFs)</option>
+                    </select>
+                </div>
+
+                <button id="generateBtn" class="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded transition duration-200 shadow shadow-blue-500/30">
+                    Gerar Mapa
+                </button>
+                
+                <div id="statusMsg" class="text-sm hidden mt-2 font-medium"></div>
+
+            </div>
+
+            <!-- Map Area -->
+            <div class="bg-white p-4 rounded-lg shadow-md lg:col-span-2 relative">
+                <div id="loadingOverlay" class="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center rounded-lg hidden">
+                    <svg class="animate-spin h-10 w-10 text-blue-600 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span class="font-medium text-blue-800">Carregando mapa do IBGE...</span>
+                </div>
+                <div id="map"></div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // --- Map Initialization ---
+        const map = L.map('map').setView([-14.235, -51.925], 4); // Center of Brazil
+        
+        // Add a clean basemap
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd',
+            maxZoom: 20
+        }).addTo(map);
+
+        let geojsonLayer = null;
+        let legend = null;
+        let currentGeoData = null;
+        let trendsDataMap = {}; // Maps region name to its index value
+        
+        // Custom control to show info on hover
+        const info = L.control();
+        info.onAdd = function (map) {
+            this._div = L.DomUtil.create('div', 'info');
+            this.update();
+            return this._div;
+        };
+        info.update = function (props) {
+            if (!props) {
+                this._div.innerHTML = '<h4>Índice de Busca</h4>Passe o mouse sobre um estado';
+                return;
+            }
+            
+            const regionName = props.name || props.NM_ESTADO || props.NM_UF || props.SIGLA_UF || "Desconhecido";
+            const normalizedName = normalizeString(regionName);
+            const value = trendsDataMap[normalizedName] !== undefined ? trendsDataMap[normalizedName] : 'Sem dados';
+            
+            this._div.innerHTML = `<h4>${regionName}</h4><b>${value}</b>`;
+        };
+        info.addTo(map);
+
+        // --- Utility Functions ---
+        function normalizeString(str) {
+            if (!str) return "";
+            return str.toLowerCase()
+                      .normalize("NFD")
+                      .replace(/[\u0300-\u036f]/g, "") // remove accents
+                      .trim();
+        }
+
+        function showStatus(msg, isError=false) {
+            const el = document.getElementById('statusMsg');
+            el.innerHTML = msg;
+            el.className = `text-sm mt-2 font-medium block p-2 rounded ${isError ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`;
+        }
+
+        function toggleLoading(show) {
+            document.getElementById('loadingOverlay').classList.toggle('hidden', !show);
+        }
+
+        // --- Data Processing & Map Drawing ---
+        
+        function getColorScale(schemeName) {
+            // Mapping UI schemes to D3 interpolators
+            const scales = {
+                'Reds': d3.interpolateReds,
+                'Blues': d3.interpolateBlues,
+                'Greens': d3.interpolateGreens,
+                'Purples': d3.interpolatePurples,
+                'Oranges': d3.interpolateOranges,
+                'YlOrRd': d3.interpolateYlOrRd
+            };
+            return scales[schemeName] || d3.interpolateReds;
+        }
+
+        function drawMap() {
+            if (!currentGeoData) return;
+            
+            if (geojsonLayer) {
+                map.removeLayer(geojsonLayer);
+            }
+
+            const schemeName = document.getElementById('colorScheme').value;
+            const colorScale = getColorScale(schemeName);
+
+            // Find max value for dynamic scaling (usually 100 in Trends)
+            let maxVal = 0;
+            for (let key in trendsDataMap) {
+                if (trendsDataMap[key] > maxVal) maxVal = trendsDataMap[key];
+            }
+            if (maxVal === 0) maxVal = 100; // fallback
+
+            function styleFunction(feature) {
+                // IBGE GeoJSON state names are usually in feature.properties.name or .NM_UF
+                const regionName = feature.properties.name || feature.properties.NM_ESTADO || feature.properties.NM_UF || "";
+                const normalized = normalizeString(regionName);
+                const value = trendsDataMap[normalized];
+                
+                let fillColor = '#e5e7eb'; // Default gray for no data
+                
+                if (value !== undefined && !isNaN(value)) {
+                    // Map value [0, maxVal] to [0.1, 1.0] to avoid too light colors for low values
+                    const normalizedVal = 0.1 + (0.9 * (value / maxVal));
+                    fillColor = colorScale(normalizedVal);
+                }
+
+                return {
+                    fillColor: fillColor,
+                    weight: 1,
+                    opacity: 1,
+                    color: 'white',
+                    dashArray: '3',
+                    fillOpacity: 0.8
+                };
+            }
+
+            function highlightFeature(e) {
+                var layer = e.target;
+                layer.setStyle({
+                    weight: 3,
+                    color: '#666',
+                    dashArray: '',
+                    fillOpacity: 1
+                });
+                layer.bringToFront();
+                info.update(layer.feature.properties);
+            }
+
+            function resetHighlight(e) {
+                geojsonLayer.resetStyle(e.target);
+                info.update();
+            }
+
+            geojsonLayer = L.geoJson(currentGeoData, {
+                style: styleFunction,
+                onEachFeature: function(feature, layer) {
+                    layer.on({
+                        mouseover: highlightFeature,
+                        mouseout: resetHighlight
+                    });
+                }
+            }).addTo(map);
+
+            // Update Legend
+            if (legend) {
+                map.removeControl(legend);
+            }
+            
+            legend = L.control({position: 'bottomright'});
+            legend.onAdd = function (map) {
+                var div = L.DomUtil.create('div', 'info legend');
+                var grades = [0, 20, 40, 60, 80, 100];
+                if (maxVal !== 100 && maxVal > 0) {
+                     grades = [0, maxVal*0.2, maxVal*0.4, maxVal*0.6, maxVal*0.8, maxVal];
+                }
+
+                div.innerHTML += '<strong>Índice</strong><br>';
+                
+                for (var i = 0; i < grades.length; i++) {
+                    let val = grades[i];
+                    let normVal = 0.1 + (0.9 * (val / maxVal));
+                    let color = colorScale(normVal);
+                    
+                    div.innerHTML +=
+                        '<i style="background:' + color + '"></i> ' +
+                        Math.round(grades[i]) + (grades[i + 1] ? '&ndash;' + Math.round(grades[i + 1]) + '<br>' : '+');
+                }
+                div.innerHTML += '<br><i style="background:#e5e7eb"></i> Sem dados';
+                return div;
+            };
+            legend.addTo(map);
+        }
+
+        async function fetchIBGEGeoJSON() {
+            // Fetch Brazil States GeoJSON
+            toggleLoading(true);
+            try {
+                // Using a reliable prepared GeoJSON of Brazil States to avoid IBGE API instability
+                const url = "https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson";
+                const response = await fetch(url);
+                if (!response.ok) throw new Error("Failed to fetch map data");
+                
+                let data = await response.json();
+                
+                const ufCodeToName = {
+                    "11": "Rondonia", "12": "Acre", "13": "Amazonas", "14": "Roraima", "15": "Para", "16": "Amapa", "17": "Tocantins",
+                    "21": "Maranhao", "22": "Piaui", "23": "Ceara", "24": "Rio Grande do Norte", "25": "Paraiba", "26": "Pernambuco", "27": "Alagoas", "28": "Sergipe", "29": "Bahia",
+                    "31": "Minas Gerais", "32": "Espirito Santo", "33": "Rio de Janeiro", "35": "Sao Paulo",
+                    "41": "Parana", "42": "Santa Catarina", "43": "Rio Grande do Sul",
+                    "50": "Mato Grosso do Sul", "51": "Mato Grosso", "52": "Goias", "53": "Distrito Federal"
+                };
+
+                // Patch the geojson features to include a standard 'name' 
+                data.features.forEach(f => {
+                    const code = f.properties.codarea;
+                    if (code && ufCodeToName[code]) {
+                        f.properties.name = ufCodeToName[code];
+                    }
+                });
+
+                currentGeoData = data;
+                drawMap();
+            } catch (err) {
+                console.error(err);
+                showStatus("Erro ao carregar o mapa do IBGE: " + err.message, true);
+            } finally {
+                toggleLoading(false);
+            }
+        }
+
+        // --- Main Event Listener ---
+        document.getElementById('generateBtn').addEventListener('click', () => {
+            const rawData = document.getElementById('dataInput').value.trim();
+            if (!rawData) {
+                showStatus("Por favor, insira os dados do Google Trends.", true);
+                return;
+            }
+
+            // Parse CSV / TSV using PapaParse
+            Papa.parse(rawData, {
+                header: false,
+                dynamicTyping: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    const rows = results.data;
+                    trendsDataMap = {};
+                    let validCount = 0;
+
+                    rows.forEach(row => {
+                        let region = null;
+                        let val = null;
+
+                        for (let col of row) {
+                            if (typeof col === 'string' && isNaN(Number(col.replace('<', '').trim()))) {
+                                region = col;
+                            } else if (typeof col === 'number') {
+                                val = col;
+                            } else if (typeof col === 'string' && !isNaN(Number(col.replace('<', '').trim()))) {
+                                val = Number(col.replace('<', '').trim()); 
+                            }
+                        }
+
+                        if (region && val !== null) {
+                            const normRegion = normalizeString(region);
+                            if (normRegion !== 'estado' && normRegion !== 'regiao' && normRegion !== 'indice' && normRegion !== 'sub-regiao') {
+                                trendsDataMap[normRegion] = val;
+                                validCount++;
+                            }
+                        }
+                    });
+
+                    console.log("Parsed Map:", trendsDataMap);
+
+                    if (validCount > 0) {
+                        showStatus(`Sucesso! ${validCount} regiões mapeadas. Atualizando mapa...`);
+                        
+                        if (!currentGeoData) {
+                            fetchIBGEGeoJSON();
+                        } else {
+                            drawMap();
+                        }
+                    } else {
+                        showStatus("Não consegui ler os dados. Verifique o formato.", true);
+                    }
+                },
+                error: function(error) {
+                    showStatus("Erro ao processar dados: " + error.message, true);
+                }
+            });
+        });
+
+        // Initial Map Load
+        fetchIBGEGeoJSON();
+
+    </script>
+</body>
+</html>
